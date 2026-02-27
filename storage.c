@@ -2,16 +2,56 @@
 #include <errno.h>
 #include <zstd.h>
 
+#define BUF_SIZE 100
+
 // --- Helper Functions ---
 uint32_t get_current_head()
 {
-    // TODO: Read the integer from ".mgit/HEAD" and return it. Return 0 if it fails.
-    return 0;
+    // opening HEAD to read integer
+    int fd = open(".mgit/HEAD", O_RDONLY);
+    if (fd == -1) {
+        perror("open");
+        return 0;
+    }
+
+    // reading integer from fd and converting to uint32_t
+    char buf[BUF_SIZE];
+    ssize_t bytesRead = read(fd, buf, BUF_SIZE);
+    if (bytesRead == -1) {
+        perror("read");
+        close(fd);
+        return 0;
+    }
+    buf[bytesRead] = '\0';
+
+    uint32_t headInt = atoi(buf);
+
+    close(fd);
+    return headInt;
 }
 
 void update_head(uint32_t new_id)
 {
-    // TODO: Overwrite ".mgit/HEAD" with the new_id.
+    // opening HEAD to write integer
+    int fd = open(".mgit/HEAD", O_WRONLY | O_TRUNC);
+    if (fd == -1) {
+        perror("open");
+        return;
+    }
+
+    // construct string from new_id to update HEAD with
+    char buf[BUF_SIZE];
+    snprintf(buf, BUF_SIZE, "%u", new_id);
+
+    // write new_id to head
+    if (write(fd, buf, strlen(buf)) == -1) {
+        perror("write");
+        close(fd);
+        return;
+    }
+
+    close(fd);
+    return;
 }
 
 // --- Blob Storage (Raw) ---
