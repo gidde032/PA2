@@ -123,3 +123,21 @@ void free_file_list(FileEntry *head) {
     head = next; // Move to the next node
   }
 }
+
+void mgit_show(const char *id_str) {
+  // "It should printout current crawled in-memory metadata if not id is
+  // specified. Otherwise print the snapshot’s metadata if existed"
+
+  // ???
+  uint32_t id = id_str ? atoi(id_str) : get_current_head();
+  Snapshot *snap = load_snapshot_from_disk(id);
+  if (!snap) {
+    fprintf(stderr, "Error: Snapshot %d not found.\n", id);
+    return;
+  }
+  printf("Snapshot ID: %u\n", snap->snapshot_id);
+  printf("Message: %s\n", snap->message);
+  printf("File Count: %u\n", snap->file_count);
+  printf("Files:\n");
+  FileEntry *curr = snap->files;
+}
