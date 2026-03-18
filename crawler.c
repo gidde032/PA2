@@ -84,8 +84,162 @@ FileEntry *find_in_current_by_inode(FileEntry *head, ino_t inode) {
 FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
   FileEntry *head = NULL, *tail = NULL;
 
-  // TODO: 1. Initialize the Root directory "." and add it to your BFS
+  // Initialize the Root directory "." and add it to your BFS
   // queue/list.
+  DIR *root_dir = opendir(root);
+  if (!root_dir) {
+    fprintf(stderr, "Error: Could not open root directory %s.\n", root);
+    return NULL;
+  }
+
+  // construct the root FileEntry
+  FileEntry *root_entry = malloc(sizeof(FileEntry));
+  if (!root_entry) {
+    fprintf(stderr, "Error: Could not allocate memory for root entry.\n");
+    closedir(root_dir);
+    return NULL;
+  }
+
+  struct stat root_stat;
+  if (stat(root, &root_stat) == -1) {
+    fprintf(stderr, "Error: Could not stat root directory %s.\n", root);
+    free(root_entry);
+    closedir(root_dir);
+    return NULL;
+  }
+
+  strncpy(root_entry->path, ".", 256);
+  root_entry->is_directory = 1;
+  root_entry->size = 0;
+  root_entry->mtime = root_stat.st_mtime;
+  root_entry->inode = root_stat.st_ino;
+  root_entry->num_blocks = 0;
+  root_entry->chunks = NULL;
+  root_entry->next = NULL;
+  head = tail = root_entry;
+
+  // implement Level Order Traversal (BFS) using a queue
+  FileEntry *current = head;
+
+  while (current) {
+
+    // Process the current directory entry
+    if (current->is_directory) {
+      // Construct the full file path safely to avoid buffer overflows.
+      char dir_path[4097];
+      memset(dir_path, 0, sizeof(dir_path));
+      snprintf(dir_path, sizeof(dir_path), "%s/%s", root, current->path);
+
+      DIR *dir = opendir(dir_path);
+      if (!dir) {
+        fprintf(stderr, "Error: Could not open directory %s.\n", dir_path);
+        continue;
+      }
+
+      struct dirent *entry;
+      while ((entry = readdir(dir)) != NULL) {
+        // Ignore "." and ".." and the ".mgit" folder.
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0 ||
+            strcmp(entry->d_name, ".mgit") == 0) {
+          continue;
+        }
+
+        // Construct the full file path safely to avoid buffer overflows.
+        char file_path[4356];
+        memset(file_path, 0, sizeof(file_path));
+        snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path,
+                 entry->d_name);
+
+        struct stat file_stat;
+        if (stat(file_path, &file_stat) == -1) {
+          fprintf(stderr, "Error: Could not stat file %s.\n", file_path);
+          continue;
+        }
+        // Construct a new FileEntry for this file/directory
+        FileEntry *new_entry = malloc(sizeof(FileEntry));
+        if (!new_entry) {
+          fprintf(stderr, "Error: Could not allocate memory for file entry.\n");
+          continue;
+        }
+
+        // Store relative path
+        strncpy(new_entry->path, file_path + strlen(root) + 1, 256);
+        new_entry->is_directory = S_ISDIR(file_stat.st_mode);
+        new_entry->size = file_stat.st_size;
+        new_entry->mtime = file_stat.st_mtime;
+        new_entry->inode = file_stat.st_ino;
+        new_entry->num_blocks = 0;
+        new_entry->chunks = NULL;
+        new_entry->next = NULL;
+
+        // Deduplication (Quick Check)
+        // First, check if the inode was already seen in the CURRENT snapshot
+        FileEntry *current_inode_match =
+            find_in_current_by_inode(head, new_entry->inode);
+        if (current_inode_match) {
+          new_entry->chunks = current_inode_match->chunks;
+          new_entry->num_blocks = current_inode_match->num_blocks;
+        } else {
+
+          // Next, check if the file matches the PREVIOUS snapshot (mtime & size
+          // match).
+          FileEntry *prev_match =
+              find_in_prev(prev_snap_files, new_entry->path);
+          if (prev_match && prev_match->size == new_entry->size &&
+              prev_match->mtime == new_entry->mtime) {
+            // If it matches, copy the checksum and block metadata. DO NOT
+            // re-hash.
+            new_entry->chunks = prev_match->chunks;
+            new_entry->num_blocks = prev_match->num_blocks;
+          } else if (!new_entry->is_directory && new_entry->size > 0) {
+
+            // If the file is modified or new, use compute_hash() to
+            // generate the SHA- 256.
+            compute_hash(file_path, new_entry->checksum);
+            // Allocate the BlockTable (chunks). Note: physical_offset is set
+            // later in storage.c.
+            new_entry->chunks = malloc(sizeof(BlockTable));
+            if (!new_entry->chunks) {
+              fprintf(stderr,
+                      "Error: Could not allocate memory for block table.\n");
+              free(new_entry);
+              continue;
+            }
+            new_entry->num_blocks = 1;
+            // For simplicity, we treat the whole file
+            // as one block. You can optimize this by
+            // splitting into multiple blocks if you want.
+          }
+        }
+
+        // Append new_entry to the linked list
+        if (tail) {
+          tail->next = new_entry;
+          tail = new_entry;
+        } else {
+          head = tail = new_entry;
+        }
+
+        // Enqueue if it's a directory
+        if (new_entry->is_directory) {
+          if (tail) {
+            tail->next = new_entry;
+            tail = new_entry;
+          } else {
+            head = tail = new_entry;
+          }
+        }
+      }
+      closedir(dir);
+    }
+    // Move to the next entry in the queue
+    current = current->next;
+    if (!current)
+      break;
+  }
+
+  closedir(root_dir);
 
   // TODO: 2. Implement Level-Order Traversal (BFS)
   // - Open directories using opendir() and readdir().
@@ -94,17 +248,18 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
   // - Use stat() to gather size, mtime, inode, and directory status.
 
   // TODO: 3. Deduplication (Quick Check)
-  // - First, check if the inode was already seen in the CURRENT snapshot (Hard
-  // Link).
+  // - First, check if the inode was already seen in the CURRENT snapshot
+  // (Hard Link).
   // - Next, check if the file matches the PREVIOUS snapshot (mtime & size
   // match).
-  // - If it matches, copy the checksum and block metadata. DO NOT re-hash.
+  // - If it matches, copy the checksum and block metadata. DO NOT
+  // re-hash.
 
   // TODO: 4. Deep Check
   // - If the file is modified or new, use compute_hash() to generate the
   // SHA-256.
-  // - Allocate the BlockTable (chunks). Note: physical_offset is set later in
-  // storage.c.
+  // - Allocate the BlockTable (chunks). Note: physical_offset is set
+  // later in storage.c.
 
   // TODO: 5. Append new FileEntry to your linked list.
 
@@ -139,5 +294,5 @@ void mgit_show(const char *id_str) {
   printf("Message: %s\n", snap->message);
   printf("File Count: %u\n", snap->file_count);
   printf("Files:\n");
-  FileEntry *curr = snap->files;
+  //   FileEntry *curr = snap->files;
 }

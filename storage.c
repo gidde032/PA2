@@ -258,31 +258,144 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
 }
 
 void chunks_recycle(uint32_t target_id) {
-  // TODO: Garbage Collection (The Vacuum)
+  // Garbage Collection (The Vacuum)
+
   // 1. Load the oldest snapshot (target_id) and the newest snapshot (HEAD).
+  Snapshot *oldest = load_snapshot_from_disk(target_id);
+  Snapshot *newest = load_snapshot_from_disk(get_current_head());
+
+  FILE *vault_fp = fopen(".mgit/data.bin", "r+b");
+  if (!vault_fp) {
+    fprintf(stderr, "Error: Could not open vault for updating.\n");
+    return;
+  }
+
   // 2. Iterate through the oldest snapshot's files.
-  // 3. If a chunk's physical_offset is NOT being used by ANY file in the HEAD
-  // snapshot,
-  //    it is "stalled". Zero out those specific bytes in `data.bin`.
+  for (FileEntry *curr = oldest->files; curr != NULL; curr = curr->next) {
+    if (!curr->is_directory) {
+      // For each chunk in the file, check if its physical_offset is being used
+      // by ANY file in the newest snapshot.
+      for (int i = 0; i < curr->num_blocks; i++) {
+        uint64_t offset = curr->chunks[i].physical_offset;
+        int used = 0;
+        for (FileEntry *new_curr = newest->files; new_curr != NULL;
+             new_curr = new_curr->next) {
+          if (!new_curr->is_directory) {
+            for (int j = 0; j < new_curr->num_blocks; j++) {
+              if (new_curr->chunks[j].physical_offset == offset) {
+                used = 1;
+                break;
+              }
+            }
+          }
+          if (used)
+            break;
+        }
+        // If the chunk's physical_offset is NOT being used by ANY file in the
+        // HEAD snapshot, it is "stalled". Zero out those specific bytes in
+        // `data.bin`.
+        if (!used) {
+
+          if (fseek(vault_fp, offset, SEEK_SET) != 0) {
+            fprintf(stderr, "Error: Failed to seek in vault.\n");
+            fclose(vault_fp);
+            return;
+          }
+
+          char zero_buf[BUF_SIZE] = {0};
+          size_t bytesToZero = curr->chunks[i].size;
+          while (bytesToZero > 0) {
+            size_t chunkSize = bytesToZero < BUF_SIZE ? bytesToZero : BUF_SIZE;
+            if (fwrite(zero_buf, 1, chunkSize, vault_fp) != chunkSize) {
+              fprintf(stderr, "Error: Failed to write to vault.\n");
+              break;
+            }
+            bytesToZero -= chunkSize;
+          }
+        }
+      }
+    }
+  }
+
+  fclose(vault_fp);
 }
 
 void mgit_snapshot(const char *msg) {
-  // TODO: 1. Get current HEAD ID and calculate next_id. Load previous files
+  // Get current HEAD ID and calculate next_id. Load previous files
   // for crawling.
-  // TODO: 2. Call build_file_list_bfs() to get the new directory state.
+  uint32_t current_id = get_current_head();
+  uint32_t next_id = current_id + 1;
 
-  // TODO: 3. Iterate through the new file list.
-  // - If a file has data (chunks) but its size is 0, it needs to be written
-  // to the vault.
-  // - CRITICAL: Check for Hard Links! If another file in the *current* list
-  // with the same
-  //   inode was already written to the vault, copy its offset and size. DO
-  //   NOT write twice!
-  // - Call write_blob_to_vault() for new files.
+  FileEntry *prev_files = NULL;
+  if (current_id > 0) {
+    Snapshot *prev_snap = load_snapshot_from_disk(current_id);
+    if (!prev_snap) {
+      fprintf(stderr, "Error: Failed to load previous snapshot.\n");
+      return;
+    }
+    prev_files = prev_snap->files;
+  }
 
-  // TODO: 4. Call store_snapshot_to_disk() and update_head().
-  // TODO: 5. Free memory.
+  Snapshot *snap = malloc(sizeof(Snapshot));
+  snap->snapshot_id = next_id;
+  snap->file_count = 0;
+  strncpy(snap->message, msg ? msg : "No message provided", 256);
+
+  // Call build_file_list_bfs() to get the new directory state.
+  FileEntry *new_files = build_file_list_bfs(".", prev_files);
+
+  // Iterate through the new file list.
+  for (FileEntry *curr = new_files; curr != NULL; curr = curr->next) {
+    // - If a file has data (chunks) but its size is 0, it needs to be written
+    // to the vault.
+    // - CRITICAL: Check for Hard Links! If another file in the *current* list
+    // with the same
+    //   inode was already written to the vault, copy its offset and size. DO
+    //   NOT write twice!
+    if (!curr->is_directory && curr->size > 0) {
+      int already_written = 0;
+      for (FileEntry *check = new_files; check != curr; check = check->next) {
+        if (!check->is_directory && check->inode == curr->inode) {
+          curr->chunks = check->chunks;
+          curr->num_blocks = check->num_blocks;
+          already_written = 1;
+          break;
+        }
+      }
+      if (!already_written) {
+        curr->chunks = malloc(sizeof(BlockTable));
+        if (!curr->chunks) {
+          fprintf(stderr,
+                  "Error: Could not allocate memory for block table.\n");
+          continue;
+        }
+        curr->num_blocks = 1;
+        // - Call write_blob_to_vault() for new files.
+        write_blob_to_vault(curr->path, &curr->chunks[0]);
+      }
+    }
+  }
+
+  // Call store_snapshot_to_disk() and update_head().
+  store_snapshot_to_disk(snap);
+  update_head(next_id);
+
+  // Free memory.
+  free(snap);
+  free_file_list(new_files);
+  free_file_list(prev_files);
+
   // TODO: 6. Enforce MAX_SNAPSHOT_HISTORY (5). If exceeded, call
   // chunks_recycle()
   //          and delete the oldest manifest file using remove().
+  if (next_id - 1 > MAX_SNAPSHOT_HISTORY) {
+    uint32_t target_id = next_id - MAX_SNAPSHOT_HISTORY;
+    chunks_recycle(target_id);
+    char old_filepath[BUF_SIZE];
+    snprintf(old_filepath, BUF_SIZE, ".mgit/snapshots/snap_%03u.bin",
+             target_id);
+    if (remove(old_filepath) != 0) {
+      fprintf(stderr, "Error: Failed to remove old snapshot file.\n");
+    }
+  }
 }
