@@ -115,13 +115,24 @@ void mgit_send(const char *id_str) {
     if (!currentFile->is_directory && currentFile->num_blocks > 0) { // check if files contain blocks of data
       for (int i = 0; i<currentFile->num_blocks; i++) {
         FILE *storedData = fopen(".mgit/data.bin", "rb");
+        if (storedData == NULL) {
+          fprintf(stderr, "Error: Failed to open data storage\n");
+          exit(1);
+        }
         fseek(storedData, currentFile->chunks[i].physical_offset, SEEK_SET); // read from stored offset
 
         void *chunkBuffer = malloc(currentFile->chunks[i].size);
         fread(chunkBuffer, 1, currentFile->chunks[i].size, storedData); // read into temporary chunk buffer before storing
-        fclose(storedData);
+        if (fclose(storedData) == -1) {
+          perror("Error closing file");
+          exit(1);
+        }
 
-        write_all(STDOUT_FILENO, chunkBuffer, currentFile->chunks[i].size); // write compressed data
+        if (write_all(STDOUT_FILENO, chunkBuffer, currentFile->chunks[i].size) != currentFile->chunks[i].size) { // write compressed data
+          fprintf(stderr, "Error: Failed to write chunk data\n");
+          exit(1);
+        };
+        
         free(chunkBuffer);
       }
     }
@@ -193,8 +204,12 @@ void mgit_receive(const char *dest_path) {
   free(manifestBuffer);
 
   FILE *storedData = fopen(".mgit/data.bin", "ab");
-  FileEntry *currentFile = snap->files;
+  if (storedData == NULL) {
+    fprintf(stderr, "Error: accessing data storage\n");
+    exit(1);
+  }
 
+  FileEntry *currentFile = snap->files;
   while (currentFile) {
     if (!currentFile->is_directory && currentFile->num_blocks > 0) { // iterate through all files with data blocks
         for (int i = 0; i < currentFile->num_blocks; i++) {
@@ -218,14 +233,24 @@ void mgit_receive(const char *dest_path) {
             fwrite(data, 1, currentFile->chunks[i].size, output);
             free(data);
         }
-        fclose(output);
+
+        if (fclose(output) == -1) {
+          perror("Error closing file");
+          exit(1);
+        }
     } else if (currentFile->is_directory && strcmp(currentFile->path, ".") != 0) {
-        mkdir(currentFile->path, 0755);
+      if (mkdir(currentFile->path, 0755) == -1) { // main mgit directory
+        perror("mkdir");
+        return;
+      }
     }
     
     currentFile = currentFile->next;
   }
-  fclose(storedData);
+  if (fclose(storedData) == -1) {
+    perror("Error closing file");
+    exit(1);
+  }
 
   store_snapshot_to_disk(snap); // save new snapshot and update head with its id
   update_head(snap->snapshot_id);

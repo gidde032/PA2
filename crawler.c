@@ -178,8 +178,10 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
         FileEntry *current_inode_match =
             find_in_current_by_inode(head, new_entry->inode);
         if (current_inode_match) {
-          new_entry->chunks = current_inode_match->chunks;
           new_entry->num_blocks = current_inode_match->num_blocks;
+          new_entry->chunks = malloc(sizeof(BlockTable) * new_entry->num_blocks);
+          memcpy(new_entry->chunks, current_inode_match->chunks, sizeof(BlockTable) * new_entry->num_blocks);
+          memcpy(new_entry->checksum, current_inode_match->checksum, 32);
         } else {
 
           // Next, check if the file matches the PREVIOUS snapshot (mtime & size
@@ -190,8 +192,10 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
               prev_match->mtime == new_entry->mtime) {
             // If it matches, copy the checksum and block metadata. DO NOT
             // re-hash.
-            new_entry->chunks = prev_match->chunks;
             new_entry->num_blocks = prev_match->num_blocks;
+            new_entry->chunks = malloc(sizeof(BlockTable) * new_entry->num_blocks);
+            memcpy(new_entry->chunks, prev_match->chunks, sizeof(BlockTable) * new_entry->num_blocks);
+            memcpy(new_entry->checksum, prev_match->checksum, 32);
           } else if (!new_entry->is_directory && new_entry->size > 0) {
 
             // If the file is modified or new, use compute_hash() to
@@ -219,16 +223,6 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
           tail = new_entry;
         } else {
           head = tail = new_entry;
-        }
-
-        // Enqueue if it's a directory
-        if (new_entry->is_directory) {
-          if (tail) {
-            tail->next = new_entry;
-            tail = new_entry;
-          } else {
-            head = tail = new_entry;
-          }
         }
       }
       closedir(dir);
@@ -282,17 +276,51 @@ void free_file_list(FileEntry *head) {
 void mgit_show(const char *id_str) {
   // "It should printout current crawled in-memory metadata if not id is
   // specified. Otherwise print the snapshot’s metadata if existed"
+  if (!id_str) { // print live directory view if no snapshot id specified
+    FileEntry *liveFiles = build_file_list_bfs(".", NULL);
+    if (!liveFiles) {
+      fprintf(stderr, "Error crawling in-memory metadata\n");
+      exit(1);
+    }
 
-  // ???
-  uint32_t id = id_str ? atoi(id_str) : get_current_head();
-  Snapshot *snap = load_snapshot_from_disk(id);
-  if (!snap) {
-    fprintf(stderr, "Error: Snapshot %d not found.\n", id);
-    return;
+    int count = 0;
+    FileEntry *currentFile = liveFiles;
+    while (currentFile) { // print each file/dir and specify type
+      if (currentFile->is_directory) {
+          printf("Directory:  %s\n", currentFile->path);
+      } else {
+          printf("File: %s (%lld bytes)\n", currentFile->path, currentFile->size);
+      }
+      count++;
+      currentFile = currentFile->next;
+    }
+
+    printf("\nCurrent directory total: %d files\n", count); // print total file/dir count
+    free_file_list(liveFiles);
+  } else { // print snapshot view if id specified
+    uint32_t id = atoi(id_str);
+    Snapshot *snap = load_snapshot_from_disk(id);
+
+    if (!snap) {
+      fprintf(stderr, "Error: Snapshot %d not found.\n", id);
+      return;
+    }
+
+    printf("Snapshot ID: %u\n", snap->snapshot_id);
+    printf("Message: %s\n", snap->message);
+    printf("File Count: %u\n", snap->file_count);
+
+    FileEntry *currentFile = snap->files;
+    while (currentFile) { // print each file/dir and specify type
+      if (currentFile->is_directory) {
+          printf("Directory:  %s\n", currentFile->path);
+      } else {
+          printf("File: %s (%lld bytes)\n", currentFile->path, currentFile->size);
+      }
+      currentFile = currentFile->next;
+    }
+
+    free_file_list(snap->files);
+    free(snap);
   }
-  printf("Snapshot ID: %u\n", snap->snapshot_id);
-  printf("Message: %s\n", snap->message);
-  printf("File Count: %u\n", snap->file_count);
-  printf("Files:\n");
-  //   FileEntry *curr = snap->files;
 }
