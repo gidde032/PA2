@@ -1,6 +1,5 @@
 #include "mgit.h"
 #include <arpa/inet.h> // For htonl/ntohl
-#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <zstd.h>
 
@@ -111,53 +110,126 @@ void mgit_send(const char *id_str) {
   }
 
   // 3. Payload Phase
-  // TODO: Iterate through the files in the snapshot.
-  // - If DISK MODE: Read the compressed chunks from ".mgit/data.bin" and
-  // write_all to STDOUT.
-  // - If LIVE MODE: The chunks are already compressed in memory; send them
-  // directly.
-  uint32_t net_len = htonl(manifest_len);
-  write_all(STDOUT_FILENO, &net_len, 4);
-  write_all(STDOUT_FILENO, manifest_buf, manifest_len);
+  FileEntry *currentFile = snap->files;
+  while (currentFile) { // iterate through all files in the current snapshot
+    if (!currentFile->is_directory && currentFile->num_blocks > 0) { // check if files contain blocks of data
+      for (int i = 0; i<currentFile->num_blocks; i++) {
+        FILE *storedData = fopen(".mgit/data.bin", "rb");
+        fseek(storedData, currentFile->chunks[i].physical_offset, SEEK_SET); // read from stored offset
+
+        void *chunkBuffer = malloc(currentFile->chunks[i].size);
+        fread(chunkBuffer, 1, currentFile->chunks[i].size, storedData); // read into temporary chunk buffer before storing
+        fclose(storedData);
+
+        write_all(STDOUT_FILENO, chunkBuffer, currentFile->chunks[i].size); // write compressed data
+        free(chunkBuffer);
+      }
+    }
+    currentFile = currentFile->next;
+  }
   free(manifest_buf);
 }
 
 void mgit_receive(const char *dest_path) {
-  // 1. Setup
-
-  uint32_t magic;
-  if (read_all(STDIN_FILENO, &magic, 4) != 4)
-    exit(1);
-  if (ntohl(magic) != MAGIC_NUMBER) {
-    fprintf(stderr, "Error: Invalid protocol\n");
-    exit(1);
-  }
-
+  // Setup
   // mkdir(dest_path) and mgit_init() inside it.
   mkdir(dest_path, 0755);
   chdir(dest_path);
   mgit_init();
 
-  // 2. Handshake Phase
-  // TODO: read_all from STDIN and verify the MAGIC_NUMBER.
+  // Handshake Phase
+  uint32_t magic;
+  if (read_all(STDIN_FILENO, &magic, 4) != 4) {
+    exit(1);
+  }
+  if (ntohl(magic) != MAGIC_NUMBER) {
+    fprintf(stderr, "Error: Invalid protocol\n");
+    exit(1);
+  }
 
   uint32_t net_len;
-  if (read_all(STDIN_FILENO, &net_len, 4) != 4)
+  if (read_all(STDIN_FILENO, &net_len, 4) != 4) {
     exit(1);
-  // size_t manifest_len = ntohl(net_len);
+  }
+  size_t manifest_len = ntohl(net_len);
 
-  // 3. Manifest Reconstruction
-  // TODO: Read the manifest size, allocate memory, and read the serialized
-  // data. Reconstruct the linked list of FileEntries.
+  void *manifestBuffer = malloc(manifest_len); // create the manifest buffer and read in all data
+  read_all(STDIN_FILENO, manifestBuffer, manifest_len);
 
-  // 4. Processing Chunks (The Streaming OS Challenge)
-  // TODO: Open ".mgit/data.bin" for appending.
-  // For each file in the manifest:
-  //   1. Open the file in the workspace for writing ("wb").
-  //   2. While reading the compressed chunk from STDIN:
-  //      - Write the raw compressed bytes into the local ".mgit/data.bin".
-  //      - HINT: Don't forget to update physical_offset for the local vault!
+  Snapshot *snap = malloc(sizeof(Snapshot));
+  void *ptr = manifestBuffer;
 
-  // 5. Cleanup
-  // TODO: Save the new snapshot to disk and update HEAD.
+  memcpy(&snap->snapshot_id, ptr, 4); // rebuild snapshot using data stored in buffer
+  ptr += 4;
+  memcpy(&snap->file_count, ptr, 4);
+  ptr += 4;
+  memcpy(&snap->message, ptr, 256);
+  ptr += 256;
+
+  FileEntry *head = NULL; 
+  FileEntry *tail = NULL;
+  for (int i = 0; i < snap->file_count; i++) {
+    FileEntry *currentFile = malloc(sizeof(FileEntry));
+    
+    size_t fileBaseSize = sizeof(FileEntry) - sizeof(void*) * 2; // copying basic file data of fixed size
+    memcpy(currentFile, ptr, fileBaseSize);
+    ptr += fileBaseSize;
+    
+    // Allocate and copy blocks
+    if (currentFile->num_blocks > 0) {
+      currentFile->chunks = malloc(sizeof(BlockTable) * currentFile->num_blocks);
+        size_t blockSize = sizeof(BlockTable) * currentFile->num_blocks;
+        memcpy(currentFile->chunks, ptr, blockSize);
+        ptr += blockSize;
+    }
+    
+    currentFile->next = NULL;
+    if (!head) head = currentFile;
+    if (tail) tail->next = currentFile;
+    tail = currentFile;
+  }
+
+  snap->files = head; // build new snapshot file list
+  free(manifestBuffer);
+
+  FILE *storedData = fopen(".mgit/data.bin", "ab");
+  FileEntry *currentFile = snap->files;
+
+  while (currentFile) {
+    if (!currentFile->is_directory && currentFile->num_blocks > 0) { // iterate through all files with data blocks
+        for (int i = 0; i < currentFile->num_blocks; i++) {
+            uint64_t new_offset = ftell(storedData);
+            
+            void *chunk = malloc(currentFile->chunks[i].size);
+            read_all(STDIN_FILENO, chunk, currentFile->chunks[i].size);
+            
+            fwrite(chunk, 1, currentFile->chunks[i].size, storedData); // write to stored data
+            
+            currentFile->chunks[i].physical_offset = new_offset; // update offset of altered chunk
+            
+            free(chunk);
+        }
+        
+        FILE *output = fopen(currentFile->path, "wb");
+        for (int i = 0; i < currentFile->num_blocks; i++) {
+            fseek(storedData, currentFile->chunks[i].physical_offset, SEEK_SET);
+            void *data = malloc(currentFile->chunks[i].size);
+            fread(data, 1, currentFile->chunks[i].size, storedData);
+            fwrite(data, 1, currentFile->chunks[i].size, output);
+            free(data);
+        }
+        fclose(output);
+    } else if (currentFile->is_directory && strcmp(currentFile->path, ".") != 0) {
+        mkdir(currentFile->path, 0755);
+    }
+    
+    currentFile = currentFile->next;
+  }
+  fclose(storedData);
+
+  store_snapshot_to_disk(snap); // save new snapshot and update head with its id
+  update_head(snap->snapshot_id);
+
+  free_file_list(snap->files); // cleanup
+  free(snap);
 }
