@@ -3,26 +3,30 @@
 // Helper: Check if a path exists in the target snapshot
 int path_in_snapshot(Snapshot *snap, const char *path) {
   // Iterate over snap->files and return 1 if the path matches, 0 otherwise.
-  for (size_t i = 0; i < snap->file_count; i++) {
-    if (strcmp(snap->files[i].path, path) == 0) {
-      return 1; // Found the path in the snapshot
+  FileEntry *currentFile = snap->files;
+    while (currentFile) {
+        if (strcmp(currentFile->path, path) == 0) {
+            return 1;
+        }
+        currentFile = currentFile->next;
     }
-  }
-  return 0;
+    return 0;
 }
 
 // Helper: Reverse the linked list
 FileEntry *reverse_list(FileEntry *head) {
   // Standard linked list reversal.
-  while (head) {
-    FileEntry *next = head->next;
-    head->next = NULL; // Detach the current node
-    if (next) {
-      next->next = head; // Point the next node back to the current node
-    }
-    head = next; // Move to the next node
+  FileEntry *previous = NULL;
+  FileEntry *ptr = head;
+  FileEntry *next;
+
+  while (ptr) {
+    next = ptr->next; // save next node
+    ptr->next = previous; // reverse link
+    previous = ptr; // traverse list
+    ptr = next; // move to next node
   }
-  return NULL;
+  return previous;
 }
 
 void mgit_restore(const char *id_str) {
@@ -67,10 +71,14 @@ void mgit_restore(const char *id_str) {
     struct stat buf;
     if (stat(curr->path, &buf) == 0) {
       if (buf.st_size == curr->size && buf.st_mtime == curr->mtime) {
-        continue; // Skip this file/dir as it seems unchanged
+        uint8_t hash[32];
+        compute_hash(curr->path, hash);
+        if (memcmp(hash, curr->checksum, 32) == 0) {
+            continue;  // Skip this file/dir as it seems unchanged
+        }
       }
-    }
-
+    } 
+    
     // If it's a directory (and not "."), recreate it using mkdir() with 0755.
     if (curr->is_directory) {
       if (strcmp(curr->path, ".") != 0) {

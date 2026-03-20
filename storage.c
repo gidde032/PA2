@@ -124,6 +124,8 @@ void read_blob_from_vault(uint64_t offset, uint32_t size, int out_fd) {
       fprintf(stderr, "Error: Failed to write to output file.\n");
       break;
     }
+
+    bytesToRead -= bytesRead;
   }
 }
 
@@ -205,18 +207,10 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
     return NULL;
   }
 
-  FILE *vault_fp = fopen(".mgit/data.bin", "rb");
-  if (!vault_fp) {
-    fprintf(stderr, "Error: Could not open vault for reading.\n");
-    fclose(fp);
-    return NULL;
-  }
-
   Snapshot *snap = malloc(sizeof(Snapshot));
   if (!snap) {
     fprintf(stderr, "Error: Could not allocate memory for snapshot.\n");
     fclose(fp);
-    fclose(vault_fp);
     return NULL;
   }
 
@@ -232,7 +226,6 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
     if (!entry) {
       fprintf(stderr, "Error: Could not allocate memory for file entry.\n");
       fclose(fp);
-      fclose(vault_fp);
       return NULL;
     }
     fread(entry, sizeof(FileEntry) - sizeof(void *) * 2, 1, fp);
@@ -243,7 +236,6 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
         free(entry);
         // free_snapshot(snap);
         fclose(fp);
-        fclose(vault_fp);
         return NULL;
       }
       fread(entry->chunks, sizeof(BlockTable), entry->num_blocks, fp);
@@ -337,13 +329,18 @@ void mgit_snapshot(const char *msg) {
   }
 
   Snapshot *snap = malloc(sizeof(Snapshot));
+  FileEntry *new_files = build_file_list_bfs(".", prev_files);
   snap->snapshot_id = next_id;
   snap->file_count = 0;
+
+  for (FileEntry *currentFile = new_files; currentFile != NULL; currentFile = currentFile->next) {
+    snap->file_count++;
+  }
+
   strncpy(snap->message, msg ? msg : "No message provided", 256);
 
   // Call build_file_list_bfs() to get the new directory state.
-  FileEntry *new_files = build_file_list_bfs(".", prev_files);
-
+  snap->files = new_files;
   // Iterate through the new file list.
   for (FileEntry *curr = new_files; curr != NULL; curr = curr->next) {
     // - If a file has data (chunks) but its size is 0, it needs to be written
@@ -352,7 +349,7 @@ void mgit_snapshot(const char *msg) {
     // with the same
     //   inode was already written to the vault, copy its offset and size. DO
     //   NOT write twice!
-    if (!curr->is_directory && curr->size > 0) {
+    if (!curr->is_directory && curr->num_blocks == 0 && curr->size > 0) {
       int already_written = 0;
       for (FileEntry *check = new_files; check != curr; check = check->next) {
         if (!check->is_directory && check->inode == curr->inode) {
@@ -388,7 +385,7 @@ void mgit_snapshot(const char *msg) {
   // TODO: 6. Enforce MAX_SNAPSHOT_HISTORY (5). If exceeded, call
   // chunks_recycle()
   //          and delete the oldest manifest file using remove().
-  if (next_id - 1 > MAX_SNAPSHOT_HISTORY) {
+  if (next_id > MAX_SNAPSHOT_HISTORY) {
     uint32_t target_id = next_id - MAX_SNAPSHOT_HISTORY;
     chunks_recycle(target_id);
     char old_filepath[BUF_SIZE];
