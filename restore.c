@@ -66,55 +66,38 @@ void mgit_restore(const char *id_str) {
   // --- PHASE 2: RECONSTRUCTION & INTEGRITY ---
   // Iterate through target_snap->files.
   for (FileEntry *curr = target_snap->files; curr != NULL; curr = curr->next) {
-    // optimization: skip if a file/dir already exists on disk with the same
-    // size and mtime
-    struct stat buf;
-    if (stat(curr->path, &buf) == 0) {
-      if (buf.st_size == curr->size && buf.st_mtime == curr->mtime) {
-        uint8_t hash[32];
-        compute_hash(curr->path, hash);
-        if (memcmp(hash, curr->checksum, 32) == 0) {
-            continue;  // Skip this file/dir as it seems unchanged
-        }
-      }
-    } 
     
-    // If it's a directory (and not "."), recreate it using mkdir() with 0755.
     if (curr->is_directory) {
-      if (strcmp(curr->path, ".") != 0) {
-        mkdir(curr->path, 0755); // Create directory
-      }
+        if (strcmp(curr->path, ".") != 0) {
+            mkdir(curr->path, 0755);
+        }
     } else {
-      // If it's a file, open it for writing ("wb").
-      FILE *fp = fopen(curr->path, "wb"); // Open file for writing
-      if (!fp) {
-        fprintf(stderr, "Error: Could not open file %s for writing.\n",
-                curr->path);
-        continue;
-      }
-      // For each block in curr->chunks, call read_blob_from_vault() to write
-      // the data back to disk.
-      for (int i = 0; i < curr->num_blocks; i++) {
-        read_blob_from_vault(curr->chunks[i].physical_offset,
-                             curr->chunks[i].size, fileno(fp));
-      }
+        int fd = open(curr->path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd == -1) {
+            fprintf(stderr, "Error: Could not open file %s for writing\n",
+                    curr->path);
+            exit(1);
+        }
+        
+        for (int i = 0; i < curr->num_blocks; i++) { // read block data from vault
+            read_blob_from_vault(curr->chunks[i].physical_offset,
+                                curr->chunks[i].size, fd);
+        }
+        
+        close(fd);
 
-      // --- INTEGRITY CHECK (Corruption Detection) ---
-      uint8_t computed_hash[32];
-      compute_hash(curr->path, computed_hash);
-
-      if (memcmp(computed_hash, curr->checksum, 32) != 0) {
-        fprintf(stderr,
-                "Error: Corruption detected in file %s. Hash mismatch.\n",
-                curr->path);
-        unlink(curr->path); // Remove the corrupted file
-        fclose(fp);
-        exit(1); // Abort the restore process
-      }
-
-      fclose(fp);
+        // Integrity check
+        uint8_t computed_hash[32];
+        compute_hash(curr->path, computed_hash);
+        
+        if (memcmp(computed_hash, curr->checksum, 32) != 0) {
+            fprintf(stderr, "Error: Corruption detected in file %s.\n",
+                    curr->path);
+            unlink(curr->path);
+            exit(1);
+        }
     }
-  }
+}
 
   // Cleanup
   free_file_list(target_snap->files);

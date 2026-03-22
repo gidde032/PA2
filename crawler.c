@@ -86,17 +86,12 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
 
   // Initialize the Root directory "." and add it to your BFS
   // queue/list.
-  DIR *root_dir = opendir(root);
-  if (!root_dir) {
-    fprintf(stderr, "Error: Could not open root directory %s.\n", root);
-    return NULL;
-  }
+  
 
   // construct the root FileEntry
   FileEntry *root_entry = malloc(sizeof(FileEntry));
   if (!root_entry) {
     fprintf(stderr, "Error: Could not allocate memory for root entry.\n");
-    closedir(root_dir);
     return NULL;
   }
 
@@ -104,7 +99,6 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
   if (stat(root, &root_stat) == -1) {
     fprintf(stderr, "Error: Could not stat root directory %s.\n", root);
     free(root_entry);
-    closedir(root_dir);
     return NULL;
   }
 
@@ -148,8 +142,13 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
         // Construct the full file path safely to avoid buffer overflows.
         char file_path[4356];
         memset(file_path, 0, sizeof(file_path));
-        snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path,
-                 entry->d_name);
+        if (strcmp(current->path, ".") == 0) {
+          snprintf(file_path, sizeof(file_path), "%s/%s", root, entry->d_name);
+        } else {
+            snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path, entry->d_name);
+        }
+        //snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path,
+                //entry->d_name);
 
         struct stat file_stat;
         if (stat(file_path, &file_stat) == -1) {
@@ -233,8 +232,6 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
       break;
   }
 
-  closedir(root_dir);
-
   // TODO: 2. Implement Level-Order Traversal (BFS)
   // - Open directories using opendir() and readdir().
   // - Ignore "." and ".." and the ".mgit" folder.
@@ -277,6 +274,7 @@ void mgit_show(const char *id_str) {
   // "It should printout current crawled in-memory metadata if not id is
   // specified. Otherwise print the snapshot’s metadata if existed"
   if (!id_str) { // print live directory view if no snapshot id specified
+    printf("=== LIVE VIEW ===\n");
     FileEntry *liveFiles = build_file_list_bfs(".", NULL);
     if (!liveFiles) {
       fprintf(stderr, "Error crawling in-memory metadata\n");
@@ -306,7 +304,7 @@ void mgit_show(const char *id_str) {
       return;
     }
 
-    printf("Snapshot ID: %u\n", snap->snapshot_id);
+    printf("=== SNAPSHOT %u ===\n", snap->snapshot_id); 
     printf("Message: %s\n", snap->message);
     printf("File Count: %u\n", snap->file_count);
 

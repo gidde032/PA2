@@ -73,7 +73,7 @@ void write_blob_to_vault(const char *filepath, BlockTable *block) {
   // Use ftell() to record the current end of the vault into
   // block->physical_offset.
   block->physical_offset = ftell(vault_fp);
-
+  block->size = 0;
   // Read the file bytes and write them into the vault.
   char buf[BUF_SIZE];
   size_t bytesRead;
@@ -87,6 +87,8 @@ void write_blob_to_vault(const char *filepath, BlockTable *block) {
     // Update block->size.
     block->size += bytesRead;
   }
+  fclose(fp);
+  fclose(vault_fp);
 }
 
 void read_blob_from_vault(uint64_t offset, uint32_t size, int out_fd) {
@@ -127,6 +129,8 @@ void read_blob_from_vault(uint64_t offset, uint32_t size, int out_fd) {
 
     bytesToRead -= bytesRead;
   }
+
+  fclose(vault_fp);
 }
 
 // --- Snapshot Management ---
@@ -221,6 +225,8 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
 
   // read the file entries and block tables
   snap->files = NULL;
+  FileEntry *tail = NULL;
+
   for (uint32_t i = 0; i < snap->file_count; i++) {
     FileEntry *entry = malloc(sizeof(FileEntry));
     if (!entry) {
@@ -242,10 +248,19 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
     } else {
       entry->chunks = NULL;
     }
-    entry->next = snap->files;
-    snap->files = entry;
-  }
+    
+    entry->next = NULL; 
+        
+    
+    if (tail) {
+        tail->next = entry;  // Append to the end
+    } else {
+        snap->files = entry;  // First entry becomes head
+    }
+    tail = entry;  // Update tail to the new entry
+}
 
+  fclose(fp);
   return snap;
 }
 
@@ -349,7 +364,7 @@ void mgit_snapshot(const char *msg) {
     // with the same
     //   inode was already written to the vault, copy its offset and size. DO
     //   NOT write twice!
-    if (!curr->is_directory && curr->num_blocks == 0 && curr->size > 0) {
+    if (!curr->is_directory && curr->num_blocks > 0 && curr->chunks[0].size == 0) {
       int already_written = 0;
       for (FileEntry *check = new_files; check != curr; check = check->next) {
         if (!check->is_directory && check->inode == curr->inode) {
@@ -360,14 +375,6 @@ void mgit_snapshot(const char *msg) {
         }
       }
       if (!already_written) {
-        curr->chunks = malloc(sizeof(BlockTable));
-        if (!curr->chunks) {
-          fprintf(stderr,
-                  "Error: Could not allocate memory for block table.\n");
-          continue;
-        }
-        curr->num_blocks = 1;
-        // - Call write_blob_to_vault() for new files.
         write_blob_to_vault(curr->path, &curr->chunks[0]);
       }
     }
