@@ -99,7 +99,8 @@ void mgit_send(const char *id_str) {
   void *manifest_buf = serialize_snapshot(snap, &manifest_len);
 
   // Send its size followed by the buffer.
-  if (write_all(STDOUT_FILENO, &manifest_len, 4) != 4) {
+  uint32_t net_len = htonl(manifest_len);
+  if (write_all(STDOUT_FILENO, &net_len, 4) != 4) {
     fprintf(stderr, "Error: Failed to send manifest length\n");
     exit(1);
   }
@@ -142,35 +143,31 @@ void mgit_send(const char *id_str) {
 }
 
 void mgit_receive(const char *dest_path) {
-  // Setup
-  // mkdir(dest_path) and mgit_init() inside it.
-  mkdir(dest_path, 0755);
-  chdir(dest_path);
-  mgit_init();
-
-  // Handshake Phase
-  uint32_t magic;
-  if (read_all(STDIN_FILENO, &magic, 4) != 4) {
-    exit(1);
+  if (chdir(dest_path) == -1) {
+      perror("chdir");
+      exit(1);
   }
+
+  // handshake Phase
+  uint32_t magic;
+  if (read_all(STDIN_FILENO, &magic, 4) != 4) exit(1);
   if (ntohl(magic) != MAGIC_NUMBER) {
-    fprintf(stderr, "Error: Invalid protocol\n");
-    exit(1);
+      fprintf(stderr, "Error: Invalid protocol\n");
+      exit(1);
   }
 
   uint32_t net_len;
-  if (read_all(STDIN_FILENO, &net_len, 4) != 4) {
-    exit(1);
-  }
+  if (read_all(STDIN_FILENO, &net_len, 4) != 4) exit(1);
   size_t manifest_len = ntohl(net_len);
 
-  void *manifestBuffer = malloc(manifest_len); // create the manifest buffer and read in all data
+  // create manifest buffer and read in all data
+  void *manifestBuffer = malloc(manifest_len);
   read_all(STDIN_FILENO, manifestBuffer, manifest_len);
 
-  Snapshot *snap = malloc(sizeof(Snapshot));
+  Snapshot *snap = malloc(sizeof(Snapshot)); // create and rebuild snapshot using data stored in buffer
   void *ptr = manifestBuffer;
 
-  memcpy(&snap->snapshot_id, ptr, 4); // rebuild snapshot using data stored in buffer
+  memcpy(&snap->snapshot_id, ptr, 4);
   ptr += 4;
   memcpy(&snap->file_count, ptr, 4);
   ptr += 4;
@@ -179,82 +176,61 @@ void mgit_receive(const char *dest_path) {
 
   FileEntry *head = NULL; 
   FileEntry *tail = NULL;
-  for (int i = 0; i < snap->file_count; i++) {
-    FileEntry *currentFile = malloc(sizeof(FileEntry));
-    
-    size_t fileBaseSize = sizeof(FileEntry) - sizeof(void*) * 2; // copying basic file data of fixed size
-    memcpy(currentFile, ptr, fileBaseSize);
-    ptr += fileBaseSize;
-    
-    // Allocate and copy blocks
-    if (currentFile->num_blocks > 0) {
-      currentFile->chunks = malloc(sizeof(BlockTable) * currentFile->num_blocks);
-        size_t blockSize = sizeof(BlockTable) * currentFile->num_blocks;
-        memcpy(currentFile->chunks, ptr, blockSize);
-        ptr += blockSize;
-    }
-    
-    currentFile->next = NULL;
-    if (!head) head = currentFile;
-    if (tail) tail->next = currentFile;
-    tail = currentFile;
+  for (uint32_t i = 0; i < snap->file_count; i++) { // rebuild snapshot files
+      FileEntry *currentFile = malloc(sizeof(FileEntry));
+      
+      size_t fileBaseSize = sizeof(FileEntry) - sizeof(void*) * 2;
+      memcpy(currentFile, ptr, fileBaseSize);
+      ptr += fileBaseSize;
+      
+      if (currentFile->num_blocks > 0) {
+          currentFile->chunks = malloc(sizeof(BlockTable) * currentFile->num_blocks);
+          size_t blockSize = sizeof(BlockTable) * currentFile->num_blocks;
+          memcpy(currentFile->chunks, ptr, blockSize);
+          ptr += blockSize;
+      } else {
+          currentFile->chunks = NULL;
+      }
+      
+      currentFile->next = NULL;
+      if (!head) head = currentFile;
+      if (tail) tail->next = currentFile;
+      tail = currentFile;
   }
 
-  snap->files = head; // build new snapshot file list
+  snap->files = head;
   free(manifestBuffer);
 
+  // build data vault and store new offsets
   FILE *storedData = fopen(".mgit/data.bin", "ab");
-  if (storedData == NULL) {
-    fprintf(stderr, "Error: accessing data storage\n");
-    exit(1);
+  if (!storedData) {
+      fprintf(stderr, "Error: accessing data storage\n");
+      exit(1);
   }
 
   FileEntry *currentFile = snap->files;
   while (currentFile) {
-    if (!currentFile->is_directory && currentFile->num_blocks > 0) { // iterate through all files with data blocks
-        for (int i = 0; i < currentFile->num_blocks; i++) {
-            uint64_t new_offset = ftell(storedData);
-            
-            void *chunk = malloc(currentFile->chunks[i].size);
-            read_all(STDIN_FILENO, chunk, currentFile->chunks[i].size);
-            
-            fwrite(chunk, 1, currentFile->chunks[i].size, storedData); // write to stored data
-            
-            currentFile->chunks[i].physical_offset = new_offset; // update offset of altered chunk
-            
-            free(chunk);
-        }
-        
-        FILE *output = fopen(currentFile->path, "wb");
-        for (int i = 0; i < currentFile->num_blocks; i++) {
-            fseek(storedData, currentFile->chunks[i].physical_offset, SEEK_SET);
-            void *data = malloc(currentFile->chunks[i].size);
-            fread(data, 1, currentFile->chunks[i].size, storedData);
-            fwrite(data, 1, currentFile->chunks[i].size, output);
-            free(data);
-        }
-
-        if (fclose(output) == -1) {
-          perror("Error closing file");
-          exit(1);
-        }
-    } else if (currentFile->is_directory && strcmp(currentFile->path, ".") != 0) {
-      if (mkdir(currentFile->path, 0755) == -1) { // main mgit directory
-        perror("mkdir");
-        return;
+      if (!currentFile->is_directory && currentFile->num_blocks > 0) {
+          for (int i = 0; i < currentFile->num_blocks; i++) {
+              uint64_t new_offset = ftell(storedData);
+              
+              void *chunk = malloc(currentFile->chunks[i].size);
+              read_all(STDIN_FILENO, chunk, currentFile->chunks[i].size);
+              fwrite(chunk, 1, currentFile->chunks[i].size, storedData);
+              
+              currentFile->chunks[i].physical_offset = new_offset;
+              free(chunk);
+          }
       }
-    }
-    
-    currentFile = currentFile->next;
+      currentFile = currentFile->next;
   }
-  if (fclose(storedData) == -1) {
-    perror("Error closing file");
-    exit(1);
-  }
+  fclose(storedData);
 
-  store_snapshot_to_disk(snap); // save new snapshot and update head with its id
+  // save snapshot and update HEAD
+  store_snapshot_to_disk(snap);
   update_head(snap->snapshot_id);
 
-  free_file_list(snap->files); // cleanup
+  // cleanup
+  free_file_list(snap->files);
   free(snap);
 }

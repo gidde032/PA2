@@ -368,8 +368,8 @@ void mgit_snapshot(const char *msg) {
       int already_written = 0;
       for (FileEntry *check = new_files; check != curr; check = check->next) {
         if (!check->is_directory && check->inode == curr->inode) {
-          curr->chunks = check->chunks;
-          curr->num_blocks = check->num_blocks;
+          memcpy(curr->chunks, check->chunks, sizeof(BlockTable) * curr->num_blocks);
+          memcpy(curr->checksum, check->checksum, 32);
           already_written = 1;
           break;
         }
