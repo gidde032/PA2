@@ -5,12 +5,59 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceRoot}/test.py",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "Launch",
       "type": "lldb",
       "request": "launch",
       "program": "${workspaceRoot}/mgit",
       "args": ["snapshot", "dab"],
       "cwd": "${workspaceRoot}/TEST"
+    },
+    {
+      "name": "SendTest",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/mgit",
+      "args": ["send", "2"],
+      "cwd": "${workspaceRoot}/sender_env"
+    },
+    {
+      "name": "RecieveTest",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/mgit",
+      "args": ["receive", "../receiver_env"],
+      "cwd": "${workspaceRoot}/sender_env"
+    },
+    {
+      "name": "RestoreTest",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/mgit",
+      "args": ["restore", "2"],
+      "cwd": "${workspaceRoot}/test_env"
+    },
+    {
+      "name": "snapshot",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/mgit",
+      "args": ["snapshot", "test"],
+      "cwd": "${workspaceRoot}/test_env"
+    },
+    {
+      "name": "restore",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/mgit",
+      "args": ["restore", "1"],
+      "cwd": "${workspaceRoot}/test_env"
     }
   ]
 }

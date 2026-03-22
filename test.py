@@ -270,7 +270,7 @@ def test_offset_relocation():
         return False
 
 def test_time_travel_and_corruption():
-    log("7. Time Travel & Corruption Detection")
+    log("6. Time Travel & Corruption Detection")
     setup_env()
     try:
         with open(f"{TEST_DIR}/file.txt", "w") as f: f.write("V1")

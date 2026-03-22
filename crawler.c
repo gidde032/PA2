@@ -86,7 +86,6 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
 
   // Initialize the Root directory "." and add it to your BFS
   // queue/list.
-  
 
   // construct the root FileEntry
   FileEntry *root_entry = malloc(sizeof(FileEntry));
@@ -104,7 +103,7 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
 
   strncpy(root_entry->path, ".", 256);
   root_entry->is_directory = 1;
-  root_entry->size = 0;
+  root_entry->size = root_stat.st_size;
   root_entry->mtime = root_stat.st_mtime;
   root_entry->inode = root_stat.st_ino;
   root_entry->num_blocks = 0;
@@ -145,10 +144,11 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
         if (strcmp(current->path, ".") == 0) {
           snprintf(file_path, sizeof(file_path), "%s/%s", root, entry->d_name);
         } else {
-            snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path, entry->d_name);
+          snprintf(file_path, sizeof(file_path), "%s/%s/%s", root,
+                   current->path, entry->d_name);
         }
-        //snprintf(file_path, sizeof(file_path), "%s/%s/%s", root, current->path,
-                //entry->d_name);
+        // snprintf(file_path, sizeof(file_path), "%s/%s/%s", root,
+        // current->path, entry->d_name);
 
         struct stat file_stat;
         if (stat(file_path, &file_stat) == -1) {
@@ -173,47 +173,45 @@ FileEntry *build_file_list_bfs(const char *root, FileEntry *prev_snap_files) {
         new_entry->next = NULL;
 
         // Deduplication (Quick Check)
+        FileEntry *match;
         // First, check if the inode was already seen in the CURRENT snapshot
-        FileEntry *current_inode_match =
-            find_in_current_by_inode(head, new_entry->inode);
-        if (current_inode_match) {
-          new_entry->num_blocks = current_inode_match->num_blocks;
-          new_entry->chunks = malloc(sizeof(BlockTable) * new_entry->num_blocks);
-          memcpy(new_entry->chunks, current_inode_match->chunks, sizeof(BlockTable) * new_entry->num_blocks);
-          memcpy(new_entry->checksum, current_inode_match->checksum, 32);
-        } else {
-
+        match = find_in_current_by_inode(head, new_entry->inode);
+        if (!match) {
           // Next, check if the file matches the PREVIOUS snapshot (mtime & size
           // match).
-          FileEntry *prev_match =
-              find_in_prev(prev_snap_files, new_entry->path);
-          if (prev_match && prev_match->size == new_entry->size &&
-              prev_match->mtime == new_entry->mtime) {
-            // If it matches, copy the checksum and block metadata. DO NOT
-            // re-hash.
-            new_entry->num_blocks = prev_match->num_blocks;
-            new_entry->chunks = malloc(sizeof(BlockTable) * new_entry->num_blocks);
-            memcpy(new_entry->chunks, prev_match->chunks, sizeof(BlockTable) * new_entry->num_blocks);
-            memcpy(new_entry->checksum, prev_match->checksum, 32);
-          } else if (!new_entry->is_directory && new_entry->size > 0) {
+          match = find_in_prev(prev_snap_files, new_entry->path);
+        }
 
-            // If the file is modified or new, use compute_hash() to
-            // generate the SHA- 256.
-            compute_hash(file_path, new_entry->checksum);
-            // Allocate the BlockTable (chunks). Note: physical_offset is set
-            // later in storage.c.
-            new_entry->chunks = malloc(sizeof(BlockTable));
-            if (!new_entry->chunks) {
-              fprintf(stderr,
-                      "Error: Could not allocate memory for block table.\n");
-              free(new_entry);
-              continue;
-            }
-            new_entry->num_blocks = 1;
-            // For simplicity, we treat the whole file
-            // as one block. You can optimize this by
-            // splitting into multiple blocks if you want.
+        if (match) {
+          // if either match is found, copy its offset and size. DO NOT write
+          // twice!
+          new_entry->num_blocks = match->num_blocks;
+          new_entry->chunks =
+              malloc(sizeof(BlockTable) * new_entry->num_blocks);
+          memcpy(new_entry->chunks, match->chunks,
+                 sizeof(BlockTable) * new_entry->num_blocks);
+          memcpy(new_entry->checksum, match->checksum, 32);
+
+        } else if (!new_entry->is_directory && new_entry->size > 0) {
+
+          // If the file is modified or new, use compute_hash() to
+          // generate the SHA- 256.
+          compute_hash(file_path, new_entry->checksum);
+
+          // Allocate the BlockTable (chunks). Note: physical_offset is set
+          // later in storage.c.
+          new_entry->chunks = malloc(sizeof(BlockTable));
+
+          if (!new_entry->chunks) {
+            fprintf(stderr,
+                    "Error: Could not allocate memory for block table.\n");
+            free(new_entry);
+            continue;
           }
+
+          new_entry->num_blocks = 1;
+          new_entry->chunks[0].size = 0;
+          new_entry->chunks[0].physical_offset = 0;
         }
 
         // Append new_entry to the linked list
@@ -285,15 +283,16 @@ void mgit_show(const char *id_str) {
     FileEntry *currentFile = liveFiles;
     while (currentFile) { // print each file/dir and specify type
       if (currentFile->is_directory) {
-          printf("Directory:  %s\n", currentFile->path);
+        printf("Directory:  %s\n", currentFile->path);
       } else {
-          printf("File: %s (%lld bytes)\n", currentFile->path, currentFile->size);
+        printf("File: %s (%ld bytes)\n", currentFile->path, currentFile->size);
       }
       count++;
       currentFile = currentFile->next;
     }
 
-    printf("\nCurrent directory total: %d files\n", count); // print total file/dir count
+    printf("\nCurrent directory total: %d files\n",
+           count); // print total file/dir count
     free_file_list(liveFiles);
   } else { // print snapshot view if id specified
     uint32_t id = atoi(id_str);
@@ -304,16 +303,16 @@ void mgit_show(const char *id_str) {
       return;
     }
 
-    printf("=== SNAPSHOT %u ===\n", snap->snapshot_id); 
+    printf("=== SNAPSHOT %u ===\n", snap->snapshot_id);
     printf("Message: %s\n", snap->message);
     printf("File Count: %u\n", snap->file_count);
 
     FileEntry *currentFile = snap->files;
     while (currentFile) { // print each file/dir and specify type
       if (currentFile->is_directory) {
-          printf("Directory:  %s\n", currentFile->path);
+        printf("Directory:  %s\n", currentFile->path);
       } else {
-          printf("File: %s (%lld bytes)\n", currentFile->path, currentFile->size);
+        printf("File: %s (%ld bytes)\n", currentFile->path, currentFile->size);
       }
       currentFile = currentFile->next;
     }

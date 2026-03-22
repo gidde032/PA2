@@ -248,17 +248,16 @@ Snapshot *load_snapshot_from_disk(uint32_t id) {
     } else {
       entry->chunks = NULL;
     }
-    
-    entry->next = NULL; 
-        
-    
+
+    entry->next = NULL;
+
     if (tail) {
-        tail->next = entry;  // Append to the end
+      tail->next = entry; // Append to the end
     } else {
-        snap->files = entry;  // First entry becomes head
+      snap->files = entry; // First entry becomes head
     }
-    tail = entry;  // Update tail to the new entry
-}
+    tail = entry; // Update tail to the new entry
+  }
 
   fclose(fp);
   return snap;
@@ -344,31 +343,38 @@ void mgit_snapshot(const char *msg) {
   }
 
   Snapshot *snap = malloc(sizeof(Snapshot));
+
+  // Call build_file_list_bfs() to get the new directory state
   FileEntry *new_files = build_file_list_bfs(".", prev_files);
   snap->snapshot_id = next_id;
   snap->file_count = 0;
 
-  for (FileEntry *currentFile = new_files; currentFile != NULL; currentFile = currentFile->next) {
+  for (FileEntry *currentFile = new_files; currentFile != NULL;
+       currentFile = currentFile->next) {
     snap->file_count++;
   }
 
   strncpy(snap->message, msg ? msg : "No message provided", 256);
 
-  // Call build_file_list_bfs() to get the new directory state.
   snap->files = new_files;
+
   // Iterate through the new file list.
   for (FileEntry *curr = new_files; curr != NULL; curr = curr->next) {
     // - If a file has data (chunks) but its size is 0, it needs to be written
     // to the vault.
-    // - CRITICAL: Check for Hard Links! If another file in the *current* list
-    // with the same
-    //   inode was already written to the vault, copy its offset and size. DO
-    //   NOT write twice!
-    if (!curr->is_directory && curr->num_blocks > 0 && curr->chunks[0].size == 0) {
+    if (!curr->is_directory && curr->num_blocks > 0 &&
+        curr->chunks[0].size == 0) {
+
+      // - CRITICAL: Check for Hard Links! If another file in the *current* list
+      // with the same
+      //   inode was already written to the vault, copy its offset and size. DO
+      //   NOT write twice!
       int already_written = 0;
-      for (FileEntry *check = new_files; check != curr; check = check->next) {
-        if (!check->is_directory && check->inode == curr->inode) {
-          memcpy(curr->chunks, check->chunks, sizeof(BlockTable) * curr->num_blocks);
+      for (FileEntry *check = new_files; check != NULL; check = check->next) {
+        if (!check->is_directory && check->inode == curr->inode &&
+            check->chunks[0].size > 0) {
+          memcpy(curr->chunks, check->chunks,
+                 sizeof(BlockTable) * curr->num_blocks);
           memcpy(curr->checksum, check->checksum, 32);
           already_written = 1;
           break;
